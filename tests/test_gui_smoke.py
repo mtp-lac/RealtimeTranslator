@@ -1,10 +1,13 @@
 """Offscreen PySide6 GUI and SubtitleOverlay smoke tests."""
 
+import ctypes
+from ctypes import wintypes
 import time
 from PySide6.QtCore import Qt
 
 from rtt.audio.devices import AudioDeviceInfo
 from rtt.config import AppConfig
+from rtt.gui.hotkeys import HOTKEY_TOGGLE_MUTE, HOTKEY_TOGGLE_OVERLAY, WM_HOTKEY, GlobalHotkeys
 from rtt.gui.main_window import MainWindow
 from rtt.gui.overlay import SubtitleOverlay
 from rtt.translate.pipeline import UtteranceTask
@@ -71,3 +74,25 @@ def test_main_window_updates_feed_and_overlay_slots(qapp, monkeypatch):
     win._save_api_key()
     assert mem_keys["llm"] == "sk-test-123"
     win.close()
+
+
+def test_global_hotkeys_dispatch_and_unregister(qapp, monkeypatch):
+    toggled = []
+    muted = []
+    hk = GlobalHotkeys(
+        on_toggle_overlay=lambda: toggled.append(True),
+        on_toggle_mute=lambda: muted.append(True),
+        register=False,
+    )
+    msg = wintypes.MSG()
+    msg.message = WM_HOTKEY
+    msg.wParam = HOTKEY_TOGGLE_OVERLAY
+    handled, _ = hk.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(msg))
+    qapp.processEvents()
+    assert handled and len(toggled) == 1
+
+    msg.wParam = HOTKEY_TOGGLE_MUTE
+    handled2, _ = hk.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(msg))
+    qapp.processEvents()
+    assert handled2 and len(muted) == 1
+    hk.unregister_all()
