@@ -34,6 +34,7 @@ from rtt.audio.devices import AudioDeviceInfo, default_loopback_index, list_wasa
 from rtt.audio.ring_buffer import AudioRingBuffer
 from rtt.config import AppConfig
 from rtt.gui.overlay import SubtitleOverlay
+from rtt.gui.whisper_dialog import WhisperSettingsDialog
 from rtt.gui.workers import AudioCaptureThread, STTWorker, TranslationWorker
 from rtt.logs import export as log_export
 from rtt.logs.transcript_logger import DualTranscriptLogger
@@ -177,7 +178,15 @@ class MainWindow(QMainWindow):
         form.addRow("Engine:", self.stt_engine_combo)
 
         self.whisper_model_combo = QComboBox()
-        for name in ("tiny", "base", "small", "medium", "large-v3-turbo"):
+        for name in (
+            "tiny",
+            "base",
+            "small",
+            "medium",
+            "large-v3",
+            "large-v3-turbo",
+            "distil-large-v3",
+        ):
             self.whisper_model_combo.addItem(name, name)
         self.whisper_model_combo.currentIndexChanged.connect(self._save_config)
         form.addRow("Whisper Model:", self.whisper_model_combo)
@@ -193,6 +202,10 @@ class MainWindow(QMainWindow):
             self.source_lang_combo.addItem(label, code)
         self.source_lang_combo.currentIndexChanged.connect(self._save_config)
         form.addRow("Source Lang:", self.source_lang_combo)
+
+        self.whisper_settings_btn = QPushButton("Whisper Settings...")
+        self.whisper_settings_btn.clicked.connect(self.open_whisper_settings)
+        form.addRow("", self.whisper_settings_btn)
 
         self.custom_model_path_edit = QLineEdit()
         self.custom_model_path_edit.setPlaceholderText("Path to custom model...")
@@ -507,6 +520,7 @@ class MainWindow(QMainWindow):
         is_whisper = engine == "whisper"
         self.whisper_model_combo.setEnabled(is_whisper)
         self.compute_device_combo.setEnabled(is_whisper)
+        self.whisper_settings_btn.setEnabled(is_whisper)
 
         dev = self._selected_device()
         if engine == "windows_native" and dev is not None and dev.is_loopback:
@@ -516,6 +530,15 @@ class MainWindow(QMainWindow):
             self.audio_warning_label.show()
         else:
             self.audio_warning_label.hide()
+
+    def open_whisper_settings(self) -> None:
+        dlg = WhisperSettingsDialog(self.config, self)
+        if dlg.exec() == WhisperSettingsDialog.DialogCode.Accepted:
+            dlg.apply_to_config(self.config)
+            self._save_config()
+            if self._stt_worker is not None:
+                self._stt_worker.update_whisper_config(self.config)
+            self.set_status("Whisper settings updated.")
 
     def _on_translator_changed(self) -> None:
         self._save_config()

@@ -73,6 +73,7 @@ class STTWorker(QThread):
         self._silence_ms = int(config.silence_ms)
         self._max_sentence_chars = max(20, int(config.max_sentence_chars))
         self._segmenter: VADSegmenter | None = None
+        self._orchestrator: STTOrchestrator | None = None
 
     def set_silence_ms(self, silence_ms: int) -> None:
         self._silence_ms = int(silence_ms)
@@ -81,6 +82,16 @@ class STTWorker(QThread):
 
     def set_max_sentence_chars(self, max_chars: int) -> None:
         self._max_sentence_chars = max(20, int(max_chars))
+
+    def update_whisper_config(self, config: AppConfig) -> None:
+        orch = self._orchestrator
+        if orch is None:
+            return
+        orch.config = config
+        engine = orch.active_engine
+        updater = getattr(engine, "apply_runtime_config", None)
+        if callable(updater):
+            updater(orch._whisper_config())
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -129,6 +140,7 @@ class STTWorker(QThread):
     def run(self) -> None:
         self._stop_event.clear()
         orchestrator = STTOrchestrator(self.config, on_status=lambda m: self.status.emit(m))
+        self._orchestrator = orchestrator
         try:
             self.status.emit("Loading STT model...")
             engine = orchestrator.load()
@@ -172,6 +184,7 @@ class STTWorker(QThread):
             self.error.emit(str(exc))
         finally:
             self._segmenter = None
+            self._orchestrator = None
             try:
                 orchestrator.unload()
             except Exception:

@@ -39,6 +39,27 @@ class STTOrchestrator:
         if self.on_status is not None:
             self.on_status(message)
 
+    def _whisper_config(
+        self,
+        *,
+        device: str | None = None,
+        compute_type: str | None = None,
+    ) -> dict:
+        return {
+            "model_size": self.config.whisper_model,
+            "device": device or self.config.compute_device,
+            "compute_type": compute_type or self.config.whisper_compute_type,
+            "task": self.config.whisper_task,
+            "beam_size": self.config.whisper_beam_size,
+            "best_of": self.config.whisper_best_of,
+            "temperature": self.config.whisper_temperature,
+            "vad_filter": self.config.whisper_vad_filter,
+            "condition_on_previous_text": self.config.whisper_condition_on_previous_text,
+            "initial_prompt": self.config.whisper_initial_prompt,
+            "no_speech_threshold": self.config.whisper_no_speech_threshold,
+            "compression_ratio_threshold": self.config.whisper_compression_ratio_threshold,
+        }
+
     def load(self) -> BaseSTTEngine:
         choice = self.config.stt_engine
         if choice == "windows_native":
@@ -63,13 +84,7 @@ class STTOrchestrator:
         # Default: Whisper with CUDA -> CPU -> Windows Native fallback
         engine = self._whisper_cls()
         try:
-            engine.load_model(
-                {
-                    "model_size": self.config.whisper_model,
-                    "device": self.config.compute_device,
-                    "compute_type": self.config.whisper_compute_type,
-                }
-            )
+            engine.load_model(self._whisper_config())
             if (
                 self.config.compute_device == "cuda"
                 and getattr(engine, "device_used", "cpu") != "cuda"
@@ -85,13 +100,7 @@ class STTOrchestrator:
                 self._emit(f"Whisper CUDA load failed ({exc}); retrying on CPU int8...")
                 try:
                     cpu_engine = self._whisper_cls()
-                    cpu_engine.load_model(
-                        {
-                            "model_size": self.config.whisper_model,
-                            "device": "cpu",
-                            "compute_type": "int8",
-                        }
-                    )
+                    cpu_engine.load_model(self._whisper_config(device="cpu", compute_type="int8"))
                     self.active_engine = cpu_engine
                     self._emit(f"Loaded {cpu_engine.name} (CPU fallback)")
                     return cpu_engine
@@ -123,13 +132,7 @@ class STTOrchestrator:
             self.active_engine.unload()
             try:
                 cpu_engine = self._whisper_cls()
-                cpu_engine.load_model(
-                    {
-                        "model_size": self.config.whisper_model,
-                        "device": "cpu",
-                        "compute_type": "int8",
-                    }
-                )
+                cpu_engine.load_model(self._whisper_config(device="cpu", compute_type="int8"))
                 self.active_engine = cpu_engine
                 res = cpu_engine.transcribe(audio, language)
                 return res, int((time.perf_counter() - t0) * 1000)

@@ -16,6 +16,16 @@ class AppConfig:
     stt_engine: str = "whisper"
     whisper_model: str = "small"
     compute_device: str = "cuda"
+    whisper_compute_type_mode: str = "auto"
+    whisper_task: str = "transcribe"
+    whisper_beam_size: int = 3
+    whisper_best_of: int = 1
+    whisper_temperature: float = 0.0
+    whisper_vad_filter: bool = False
+    whisper_condition_on_previous_text: bool = False
+    whisper_initial_prompt: str = ""
+    whisper_no_speech_threshold: float = 0.65
+    whisper_compression_ratio_threshold: float = 2.4
     source_lang: str = "auto"
     primary_translator: str = "llm"
     fallback_translator: str = "google"
@@ -39,6 +49,8 @@ class AppConfig:
 
     @property
     def whisper_compute_type(self) -> str:
+        if self.whisper_compute_type_mode and self.whisper_compute_type_mode != "auto":
+            return self.whisper_compute_type_mode
         return "float16" if self.compute_device == "cuda" else "int8"
 
     def to_dict(self) -> dict:

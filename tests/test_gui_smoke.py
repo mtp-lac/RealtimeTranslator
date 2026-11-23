@@ -10,6 +10,7 @@ from rtt.config import AppConfig
 from rtt.gui.hotkeys import HOTKEY_TOGGLE_MUTE, HOTKEY_TOGGLE_OVERLAY, WM_HOTKEY, GlobalHotkeys
 from rtt.gui.main_window import MainWindow
 from rtt.gui.overlay import SubtitleOverlay
+from rtt.gui.whisper_dialog import WhisperSettingsDialog
 from rtt.translate.pipeline import UtteranceTask
 
 
@@ -146,3 +147,58 @@ def test_global_hotkeys_dispatch_and_unregister(qapp, monkeypatch):
     qapp.processEvents()
     assert handled2 and len(muted) == 1
     hk.unregister_all()
+
+
+def test_whisper_settings_dialog_and_main_window_button(qapp, monkeypatch):
+    cfg = AppConfig(
+        whisper_compute_type_mode="int8_float16",
+        whisper_task="translate",
+        whisper_beam_size=6,
+        whisper_best_of=4,
+        whisper_temperature=0.25,
+        whisper_vad_filter=True,
+        whisper_condition_on_previous_text=True,
+        whisper_initial_prompt="Technical terms",
+        whisper_no_speech_threshold=0.75,
+        whisper_compression_ratio_threshold=2.8,
+    )
+    dlg = WhisperSettingsDialog(cfg)
+    assert dlg.compute_type_combo.currentData() == "int8_float16"
+    assert dlg.task_combo.currentData() == "translate"
+    assert dlg.beam_size_spin.value() == 6
+    assert dlg.best_of_spin.value() == 4
+    assert dlg.temperature_spin.value() == 0.25
+    assert dlg.vad_filter_chk.isChecked() is True
+    assert dlg.condition_prev_chk.isChecked() is True
+    assert dlg.initial_prompt_edit.text() == "Technical terms"
+    assert dlg.no_speech_spin.value() == 0.75
+    assert dlg.compression_spin.value() == 2.8
+
+    dlg.beam_size_spin.setValue(8)
+    dlg.initial_prompt_edit.setText("  Custom prompt  ")
+    target_cfg = AppConfig()
+    dlg.apply_to_config(target_cfg)
+    assert target_cfg.whisper_compute_type_mode == "int8_float16"
+    assert target_cfg.whisper_compute_type == "int8_float16"
+    assert target_cfg.whisper_beam_size == 8
+    assert target_cfg.whisper_initial_prompt == "Custom prompt"
+
+    dlg._reset_defaults()
+    dlg.apply_to_config(target_cfg)
+    assert target_cfg.whisper_compute_type_mode == "auto"
+    assert target_cfg.whisper_compute_type == "float16"
+    assert target_cfg.whisper_beam_size == 3
+    assert target_cfg.whisper_task == "transcribe"
+    assert target_cfg.whisper_initial_prompt == ""
+    dlg.close()
+
+    monkeypatch.setattr("rtt.gui.main_window.list_wasapi_devices", lambda: [])
+    monkeypatch.setattr("rtt.gui.main_window.default_loopback_index", lambda: None)
+    monkeypatch.setattr("rtt.secrets.get_api_key", lambda prov: "")
+
+    win = MainWindow(AppConfig(stt_engine="whisper"))
+    assert win.whisper_settings_btn.isEnabled() is True
+    idx_native = win.stt_engine_combo.findData("windows_native")
+    win.stt_engine_combo.setCurrentIndex(idx_native)
+    assert win.whisper_settings_btn.isEnabled() is False
+    win.close()
