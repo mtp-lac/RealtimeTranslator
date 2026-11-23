@@ -42,6 +42,56 @@ def test_subtitle_overlay_modes_and_click_through(qapp):
     overlay.close()
 
 
+def test_subtitle_overlay_max_lines_coalesce_and_clear(qapp):
+    cfg = AppConfig(overlay_max_lines=2)
+    overlay = SubtitleOverlay(cfg)
+
+    overlay.show_pending(1, "s1")
+    overlay.show_translation(1, "s1", "t1")
+    overlay.show_pending(2, "s2")
+    overlay.show_pending(3, "s3")
+    # Exceeding max_lines=2 drops seq_id 1
+    assert overlay.source_label.text() == "s2\ns3"
+    assert overlay.translation_label.text() == "Translating...\nTranslating..."
+
+    # Coalescing [2, 3] removes seq_id 3 and updates seq_id 2
+    overlay.show_translation(2, "s2 s3", "t2 t3", merged_ids=[2, 3])
+    assert overlay.source_label.text() == "s2 s3"
+    assert overlay.translation_label.text() == "t2 t3"
+
+    # Add two more lines and test live set_max_lines trimming
+    overlay.show_translation(4, "s4", "t4")
+    overlay.show_translation(5, "s5", "t5")
+    assert overlay.source_label.text() == "s4\ns5"
+    overlay.set_max_lines(1)
+    assert overlay.source_label.text() == "s5"
+    assert overlay.translation_label.text() == "t5"
+
+    overlay.clear()
+    assert overlay.source_label.text() == ""
+    assert overlay.translation_label.text() == "Ready for live translation..."
+    overlay.close()
+
+
+def test_main_window_line_and_sentence_spinboxes(qapp, monkeypatch):
+    monkeypatch.setattr("rtt.gui.main_window.list_wasapi_devices", lambda: [])
+    monkeypatch.setattr("rtt.gui.main_window.default_loopback_index", lambda: None)
+    monkeypatch.setattr("rtt.secrets.get_api_key", lambda prov: "")
+
+    cfg = AppConfig(overlay_max_lines=5, max_sentence_chars=220)
+    win = MainWindow(cfg)
+    assert win.overlay_lines_spin.value() == 5
+    assert win.max_sentence_spin.value() == 220
+
+    win.overlay_lines_spin.setValue(4)
+    win.max_sentence_spin.setValue(180)
+    collected = win._collect_config()
+    assert collected.overlay_max_lines == 4
+    assert collected.max_sentence_chars == 180
+    assert win.overlay._max_lines == 4
+    win.close()
+
+
 def test_main_window_updates_feed_and_overlay_slots(qapp, monkeypatch):
     fake_devices = [
         AudioDeviceInfo(index=1, name="Default Mic", sample_rate=48000, channels=2, is_loopback=False),

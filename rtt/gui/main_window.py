@@ -269,6 +269,16 @@ class MainWindow(QMainWindow):
         rate_row.addWidget(self.rate_slider, 1)
         rate_row.addWidget(self.rate_value_label)
         form.addRow("Rate Limit:", rate_row)
+
+        self.max_sentence_spin = QSpinBox()
+        self.max_sentence_spin.setRange(20, 1000)
+        self.max_sentence_spin.setSingleStep(10)
+        self.max_sentence_spin.setSuffix(" chars")
+        self.max_sentence_spin.setToolTip(
+            "Maximum character length of each sentence sent for translation"
+        )
+        self.max_sentence_spin.valueChanged.connect(self._on_max_sentence_changed)
+        form.addRow("Max Sentence:", self.max_sentence_spin)
         return box
 
     def _build_controls_bar(self) -> QGroupBox:
@@ -302,6 +312,15 @@ class MainWindow(QMainWindow):
         self.overlay_font_spin.setSuffix(" pt")
         self.overlay_font_spin.valueChanged.connect(self._on_overlay_style_changed)
         outer.addWidget(self.overlay_font_spin)
+
+        self.overlay_lines_spin = QSpinBox()
+        self.overlay_lines_spin.setRange(1, 10)
+        self.overlay_lines_spin.setSuffix(" lines")
+        self.overlay_lines_spin.setToolTip(
+            "Maximum number of subtitle lines displayed at once on the overlay"
+        )
+        self.overlay_lines_spin.valueChanged.connect(self._on_overlay_style_changed)
+        outer.addWidget(self.overlay_lines_spin)
 
         outer.addStretch(1)
 
@@ -404,6 +423,10 @@ class MainWindow(QMainWindow):
         self.rate_slider.blockSignals(False)
         self.rate_value_label.setText(f"{self.config.max_requests_per_min} req/min")
 
+        self.max_sentence_spin.blockSignals(True)
+        self.max_sentence_spin.setValue(int(self.config.max_sentence_chars))
+        self.max_sentence_spin.blockSignals(False)
+
         self._set_combo_by_data(self.logging_mode_combo, self.config.logging_mode)
         self.retention_spin.blockSignals(True)
         self.retention_spin.setValue(int(self.config.retention_days))
@@ -416,6 +439,9 @@ class MainWindow(QMainWindow):
         self.overlay_font_spin.blockSignals(True)
         self.overlay_font_spin.setValue(int(self.config.overlay_font_size))
         self.overlay_font_spin.blockSignals(False)
+        self.overlay_lines_spin.blockSignals(True)
+        self.overlay_lines_spin.setValue(int(self.config.overlay_max_lines))
+        self.overlay_lines_spin.blockSignals(False)
         self._load_masked_key()
 
     def _active_key_provider(self) -> str:
@@ -513,6 +539,13 @@ class MainWindow(QMainWindow):
         if self._tr_worker is not None:
             self._tr_worker.update_rate(value)
 
+    def _on_max_sentence_changed(self, value: int) -> None:
+        self._save_config()
+        if self._stt_worker is not None:
+            self._stt_worker.set_max_sentence_chars(value)
+        if self._tr_worker is not None:
+            self._tr_worker.update_max_sentence_chars(value)
+
     def _on_logging_mode_changed(self) -> None:
         self._save_config()
         self._update_history_availability()
@@ -533,6 +566,7 @@ class MainWindow(QMainWindow):
     def _on_overlay_style_changed(self) -> None:
         self.overlay.set_display_mode(self.overlay_mode_combo.currentData())
         self.overlay.set_font(self.config.overlay_font_family, self.overlay_font_spin.value())
+        self.overlay.set_max_lines(self.overlay_lines_spin.value())
         self._save_config()
 
     def _on_overlay_geometry(self, geom: list[int]) -> None:
@@ -553,10 +587,12 @@ class MainWindow(QMainWindow):
         self.config.llm_model = self.llm_model_edit.text().strip() or "gpt-4o-mini"
         self.config.target_lang = str(self.target_lang_combo.currentData())
         self.config.max_requests_per_min = int(self.rate_slider.value())
+        self.config.max_sentence_chars = int(self.max_sentence_spin.value())
         self.config.logging_mode = str(self.logging_mode_combo.currentData())
         self.config.retention_days = int(self.retention_spin.value())
         self.config.overlay_display_mode = str(self.overlay_mode_combo.currentData())
         self.config.overlay_font_size = int(self.overlay_font_spin.value())
+        self.config.overlay_max_lines = int(self.overlay_lines_spin.value())
         self.config.overlay_click_through = bool(self.click_through_chk.isChecked())
         return self.config
 
@@ -613,6 +649,7 @@ class MainWindow(QMainWindow):
 
         self._seq_rows.clear()
         self.feed_table.setRowCount(0)
+        self.overlay.clear()
         self._ring = AudioRingBuffer(max_seconds=30.0)
         self._logger = DualTranscriptLogger(
             base_dir=paths.logs_dir(),
@@ -746,7 +783,7 @@ class MainWindow(QMainWindow):
                     self.feed_table.setItem(sub_row, 3, QTableWidgetItem("[Coalesced]"))
 
         self.feed_table.scrollToBottom()
-        self.overlay.show_translation(seq_id, combined_src, translated)
+        self.overlay.show_translation(seq_id, combined_src, translated, merged_ids=merged_ids)
 
     def run_history_search(self) -> None:
         if self.config.logging_mode == "ephemeral":

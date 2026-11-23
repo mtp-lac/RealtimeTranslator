@@ -1,10 +1,22 @@
 """Frameless translucent always-on-top PySide6 subtitle overlay window."""
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent, QPainterPath
 from PySide6.QtWidgets import QLabel, QSizeGrip, QVBoxLayout, QWidget
 
 from rtt.config import AppConfig
+
+
+@dataclass
+class _OverlayEntry:
+    """Single source/translation line pair tracked in the overlay history."""
+
+    seq_id: int
+    source: str
+    translation: str | None = None
+    pending: bool = True
 
 
 class SubtitleOverlay(QWidget):
@@ -31,6 +43,8 @@ class SubtitleOverlay(QWidget):
         self._translation_color = "#FFFFFF"
         self._font_family = "Segoe UI"
         self._font_size = 22
+        self._max_lines = 3
+        self._entries: list[_OverlayEntry] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 14, 20, 10)
@@ -61,6 +75,7 @@ class SubtitleOverlay(QWidget):
         self._source_color = config.overlay_source_color or "#CBD5E1"
         self._translation_color = config.overlay_translation_color or "#FFFFFF"
         self._refresh_typography()
+        self.set_max_lines(getattr(config, "overlay_max_lines", 3))
         self.set_display_mode(config.overlay_display_mode)
         if config.overlay_geometry and len(config.overlay_geometry) == 4:
             x, y, w, h = config.overlay_geometry
@@ -97,6 +112,19 @@ class SubtitleOverlay(QWidget):
         self._display_mode = norm
         self.source_label.setVisible(norm in {"bilingual", "original"})
         self.translation_label.setVisible(norm in {"bilingual", "translation"})
+        if self._entries:
+            self._render_entries()
+
+    def set_max_lines(self, max_lines: int) -> None:
+        self._max_lines = max(1, int(max_lines))
+        if len(self._entries) > self._max_lines:
+            self._entries = self._entries[-self._max_lines :]
+        self._render_entries()
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self.source_label.setText("")
+        self.translation_label.setText("Ready for live translation...")
 
     def set_click_through(self, enabled: bool) -> None:
         self._click_through = bool(enabled)
@@ -106,16 +134,61 @@ class SubtitleOverlay(QWidget):
         if was_visible:
             self.show()
 
-    def show_pending(self, seq_id: int, src: str) -> None:
-        self.source_label.setText(src)
-        if self._display_mode == "translation":
-            self.translation_label.setText(f"... {src}")
-        else:
-            self.translation_label.setText("Translating...")
+    def _format_translation_line(self, entry: _OverlayEntry) -> str:
+        if entry.pending:
+            if self._display_mode == "translation":
+                return f"... {entry.source}"
+            return "Translating..."
+        return entry.translation if entry.translation else "(translation unavailable)"
 
-    def show_translation(self, seq_id: int, src: str, trn: str | None) -> None:
-        self.source_label.setText(src)
-        self.translation_label.setText(trn if trn else "(translation unavailable)")
+    def _render_entries(self) -> None:
+        if not self._entries:
+            return
+        self.source_label.setText("\n".join(e.source for e in self._entries))
+        self.translation_label.setText(
+            "\n".join(self._format_translation_line(e) for e in self._entries)
+        )
+
+    def show_pending(self, seq_id: int, src: str) -> None:
+        for entry in self._entries:
+            if entry.seq_id == seq_id:
+                entry.source = src
+                entry.translation = None
+                entry.pending = True
+                break
+        else:
+            self._entries.append(
+                _OverlayEntry(seq_id=seq_id, source=src, translation=None, pending=True)
+            )
+            if len(self._entries) > self._max_lines:
+                self._entries = self._entries[-self._max_lines :]
+        self._render_entries()
+
+    def show_translation(
+        self,
+        seq_id: int,
+        src: str,
+        trn: str | None,
+        merged_ids: list[int] | None = None,
+    ) -> None:
+        if merged_ids:
+            remove_ids = {mid for mid in merged_ids if mid != seq_id}
+            if remove_ids:
+                self._entries = [e for e in self._entries if e.seq_id not in remove_ids]
+
+        for entry in self._entries:
+            if entry.seq_id == seq_id:
+                entry.source = src
+                entry.translation = trn
+                entry.pending = False
+                break
+        else:
+            self._entries.append(
+                _OverlayEntry(seq_id=seq_id, source=src, translation=trn, pending=False)
+            )
+            if len(self._entries) > self._max_lines:
+                self._entries = self._entries[-self._max_lines :]
+        self._render_entries()
 
     def current_geometry(self) -> list[int]:
         g = self.geometry()

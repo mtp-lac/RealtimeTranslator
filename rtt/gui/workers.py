@@ -18,7 +18,7 @@ from rtt.translate.base import BaseTranslator
 from rtt.translate.deepl import DeepLTranslator
 from rtt.translate.google import GoogleTranslator
 from rtt.translate.llm import LLMTranslator
-from rtt.translate.pipeline import TranslationPipeline, UtteranceTask
+from rtt.translate.pipeline import TranslationPipeline, UtteranceTask, split_text_chunks
 from rtt.translate.rate_limit import AsyncTokenBucket
 from rtt.vad.segmenter import SpeechSegment, VADSegmenter
 from rtt.vad.silero import SileroVAD
@@ -71,12 +71,16 @@ class STTWorker(QThread):
         self._seq_id = 0
         self._seq_lock = threading.Lock()
         self._silence_ms = int(config.silence_ms)
+        self._max_sentence_chars = max(20, int(config.max_sentence_chars))
         self._segmenter: VADSegmenter | None = None
 
     def set_silence_ms(self, silence_ms: int) -> None:
         self._silence_ms = int(silence_ms)
         if self._segmenter is not None:
             self._segmenter.set_silence_ms(self._silence_ms)
+
+    def set_max_sentence_chars(self, max_chars: int) -> None:
+        self._max_sentence_chars = max(20, int(max_chars))
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -94,24 +98,26 @@ class STTWorker(QThread):
         engine_name: str,
         latency_ms: int,
     ) -> None:
-        seq_id = self._next_seq_id()
-        task = UtteranceTask(
-            seq_id=seq_id,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            source_lang=res.language,
-            source_text=res.text,
-        )
-        self.logger.log_source(
-            seq_id=seq_id,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            stt_engine=engine_name,
-            source_lang=res.language,
-            source_text=res.text,
-            stt_latency_ms=latency_ms,
-        )
-        self.utterance_transcribed.emit(task)
+        chunks = split_text_chunks(res.text, self._max_sentence_chars)
+        for idx, chunk in enumerate(chunks):
+            seq_id = self._next_seq_id()
+            task = UtteranceTask(
+                seq_id=seq_id,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                source_lang=res.language,
+                source_text=chunk,
+            )
+            self.logger.log_source(
+                seq_id=seq_id,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                stt_engine=engine_name,
+                source_lang=res.language,
+                source_text=chunk,
+                stt_latency_ms=latency_ms if idx == 0 else 0,
+            )
+            self.utterance_transcribed.emit(task)
 
     def _handle_segment(self, seg: SpeechSegment, orchestrator: STTOrchestrator) -> None:
         res, latency_ms = orchestrator.transcribe(seg, self.config.source_lang)
@@ -226,6 +232,10 @@ class TranslationWorker(QThread):
         if self._bucket is not None and self._loop is not None and not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self._bucket.set_rate, rate_per_sec)
 
+    def update_max_sentence_chars(self, max_chars: int) -> None:
+        if self._pipeline is not None and self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._pipeline.set_coalesce_max_chars, max_chars)
+
     def stop(self) -> None:
         self._stop_requested = True
         loop = self._loop
@@ -289,6 +299,7 @@ class TranslationWorker(QThread):
                 bucket=self._bucket,
                 target_lang=self.config.target_lang,
                 on_result=self._on_result,
+                coalesce_max_chars=max(20, int(self.config.max_sentence_chars)),
             )
             self._run_task = asyncio.create_task(self._pipeline.run())
             self._ready.set()

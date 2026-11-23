@@ -27,11 +27,13 @@ class AppConfig:
     retention_days: int = 30
     overlay_font_family: str = "Segoe UI"
     overlay_font_size: int = 22
+    overlay_max_lines: int = 3
     overlay_display_mode: str = "bilingual"
     overlay_source_color: str = "#CBD5E1"
     overlay_translation_color: str = "#FFFFFF"
     overlay_geometry: list[int] | None = None
     overlay_click_through: bool = False
+    max_sentence_chars: int = 140
     custom_model_path: str = ""
     custom_entrypoint: str = ""
 

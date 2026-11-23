@@ -10,6 +10,82 @@ from rtt.translate.base import BaseTranslator
 from rtt.translate.rate_limit import AsyncTokenBucket
 
 
+_SENTENCE_BREAKS_SPACE = (". ", "! ", "? ")
+_SENTENCE_BREAKS_CHAR = ("。", "！", "？", "\n")
+_CLAUSE_BREAKS_SPACE = (", ", "; ", ": ")
+_CLAUSE_BREAKS_CHAR = ("、", "，", "；", "：")
+_CJK_END_PUNCT = frozenset("。！？、，")
+
+
+def split_text_chunks(text: str, max_chars: int) -> list[str]:
+    """Split text into chunks of at most `max_chars` characters on natural boundaries."""
+    remaining = (text or "").strip()
+    if not remaining:
+        return []
+    limit = int(max_chars)
+    if limit <= 0 or len(remaining) <= limit:
+        return [remaining]
+
+    chunks: list[str] = []
+    while len(remaining) > limit:
+        split_idx = _find_split_index(remaining, limit)
+        chunk = remaining[:split_idx].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[split_idx:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _best_punct_split(text: str, limit: int, space_tokens: tuple[str, ...], char_tokens: tuple[str, ...]) -> int:
+    best = 0
+    extended = text[: min(len(text), limit + 1)]
+    for tok in space_tokens:
+        idx = extended.rfind(tok)
+        if idx > 0 and idx + 1 <= limit:
+            best = max(best, idx + 1)
+    window = text[:limit]
+    for tok in char_tokens:
+        idx = window.rfind(tok)
+        if idx > 0:
+            best = max(best, idx + 1)
+    return best
+
+
+def _find_split_index(text: str, limit: int) -> int:
+    idx = _best_punct_split(text, limit, _SENTENCE_BREAKS_SPACE, _SENTENCE_BREAKS_CHAR)
+    if idx > 0:
+        return idx
+
+    idx = _best_punct_split(text, limit, _CLAUSE_BREAKS_SPACE, _CLAUSE_BREAKS_CHAR)
+    if idx > 0:
+        return idx
+
+    if limit < len(text) and text[limit] == " ":
+        return limit
+    space_idx = text[:limit].rfind(" ")
+    if space_idx > 0:
+        return space_idx
+
+    return limit
+
+
+def _join_translated_chunks(parts: list[str]) -> str:
+    out = ""
+    for part in parts:
+        piece = part.strip()
+        if not piece:
+            continue
+        if not out:
+            out = piece
+        elif out[-1] in _CJK_END_PUNCT:
+            out += piece
+        else:
+            out += " " + piece
+    return out
+
+
 @dataclass
 class UtteranceTask:
     """Single STT utterance submitted to the async translation queue."""
@@ -60,8 +136,46 @@ class TranslationPipeline:
             return None
         return asyncio.run_coroutine_threadsafe(self.queue.put(task), loop)
 
+    def set_coalesce_max_chars(self, max_chars: int) -> None:
+        self.coalesce_max_chars = max(20, int(max_chars))
+
     def stop(self) -> None:
         self._stopped = True
+
+    async def _translate_with(
+        self,
+        translator: BaseTranslator,
+        text: str,
+        source_lang: str,
+        context: list[str] | None,
+    ) -> str:
+        chunks = split_text_chunks(text, self.coalesce_max_chars)
+        if not chunks:
+            return ""
+        if len(chunks) == 1:
+            return await asyncio.wait_for(
+                translator.translate(
+                    chunks[0],
+                    source_lang,
+                    self.target_lang,
+                    context=context,
+                ),
+                timeout=self.timeout,
+            )
+
+        translated_parts: list[str] = []
+        for chunk in chunks:
+            part = await asyncio.wait_for(
+                translator.translate(
+                    chunk,
+                    source_lang,
+                    self.target_lang,
+                    context=context,
+                ),
+                timeout=self.timeout,
+            )
+            translated_parts.append(part)
+        return _join_translated_chunks(translated_parts)
 
     async def run(self) -> None:
         recent_context: list[str] = []
@@ -107,28 +221,22 @@ class TranslationPipeline:
                     await self.bucket.acquire()
                     provider_name = self.primary.name
                     try:
-                        translated = await asyncio.wait_for(
-                            self.primary.translate(
-                                combined_src,
-                                item.source_lang,
-                                self.target_lang,
-                                context=recent_context[-4:],
-                            ),
-                            timeout=self.timeout,
+                        translated = await self._translate_with(
+                            self.primary,
+                            combined_src,
+                            item.source_lang,
+                            recent_context[-4:],
                         )
                         status = "TRANSLATED"
                     except Exception:
                         if self.fallback is not None:
                             provider_name = self.fallback.name
                             try:
-                                translated = await asyncio.wait_for(
-                                    self.fallback.translate(
-                                        combined_src,
-                                        item.source_lang,
-                                        self.target_lang,
-                                        context=None,
-                                    ),
-                                    timeout=self.timeout,
+                                translated = await self._translate_with(
+                                    self.fallback,
+                                    combined_src,
+                                    item.source_lang,
+                                    None,
                                 )
                                 status = "FALLBACK_TRANSLATED"
                             except Exception:
@@ -140,14 +248,11 @@ class TranslationPipeline:
                 elif self.fallback is not None:
                     provider_name = self.fallback.name
                     try:
-                        translated = await asyncio.wait_for(
-                            self.fallback.translate(
-                                combined_src,
-                                item.source_lang,
-                                self.target_lang,
-                                context=None,
-                            ),
-                            timeout=self.timeout,
+                        translated = await self._translate_with(
+                            self.fallback,
+                            combined_src,
+                            item.source_lang,
+                            None,
                         )
                         status = "FALLBACK_TRANSLATED"
                     except Exception:

@@ -3,7 +3,7 @@
 import asyncio
 
 from rtt.translate.base import BaseTranslator, TranslationError
-from rtt.translate.pipeline import TranslationPipeline, UtteranceTask
+from rtt.translate.pipeline import TranslationPipeline, UtteranceTask, split_text_chunks
 from rtt.translate.rate_limit import AsyncTokenBucket
 
 
@@ -119,5 +119,69 @@ def test_pipeline_timeout_fallback_and_both_fail_and_none():
         assert results[1][6] == "FAILED"
         assert results[2][3] is None
         assert results[2][6] == "NOT_TRANSLATED"
+
+    asyncio.run(run())
+
+
+def test_split_text_chunks_boundaries():
+    assert split_text_chunks("", 50) == []
+    assert split_text_chunks("short line", 50) == ["short line"]
+
+    # Sentence punctuation boundary
+    en_text = "First sentence. Second sentence is longer."
+    assert split_text_chunks(en_text, 20) == [
+        "First sentence.",
+        "Second sentence is",
+        "longer.",
+    ]
+
+    # Japanese/Chinese sentence punctuation
+    ja_text = "おはようございます。今日はいい天気ですね。明日も晴れます。"
+    ja_chunks = split_text_chunks(ja_text, 15)
+    assert ja_chunks == [
+        "おはようございます。",
+        "今日はいい天気ですね。",
+        "明日も晴れます。",
+    ]
+
+    # Hard split fallback when there are no spaces or punctuation
+    assert split_text_chunks("abcdefghij", 4) == ["abcd", "efgh", "ij"]
+
+
+def test_pipeline_splits_oversized_utterance_and_updates_limit():
+    async def run():
+        primary = RecordingTranslator("LLM")
+        results = []
+        pipe = TranslationPipeline(
+            primary=primary,
+            fallback=None,
+            bucket=AsyncTokenBucket(rate_per_sec=100.0, burst=10),
+            target_lang="en",
+            on_result=lambda *args: results.append(args),
+            coalesce_max_chars=25,
+        )
+        long_text = "Hello world. How are you doing today?"
+        await pipe.queue.put(UtteranceTask(1, 0.0, 1.0, "en", long_text))
+
+        runner = asyncio.create_task(pipe.run())
+        await asyncio.wait_for(pipe.queue.join(), timeout=2.0)
+
+        # Dynamically update limit and confirm shorter chunking
+        pipe.set_coalesce_max_chars(20)
+        await pipe.queue.put(UtteranceTask(2, 1.0, 2.0, "en", "Alpha beta gamma delta"))
+        await asyncio.wait_for(pipe.queue.join(), timeout=2.0)
+
+        pipe.stop()
+        runner.cancel()
+        try:
+            await runner
+        except asyncio.CancelledError:
+            pass
+
+        assert len(primary.calls) == 4
+        assert all(len(call_text) <= 25 for call_text, _ in primary.calls[:2])
+        assert all(len(call_text) <= 20 for call_text, _ in primary.calls[2:])
+        assert results[0][3] == "TR:Hello world. TR:How are you doing today?"
+        assert results[1][3] == "TR:Alpha beta gamma TR:delta"
 
     asyncio.run(run())
